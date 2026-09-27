@@ -1,0 +1,34 @@
+services:
+  db:
+    image: postgres:16
+    container_name: sentinel-x-db
+    environment:
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: sentinel
+      POSTGRES_DB: sentinel_x
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentinel -d sentinel_x"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    container_name: sentinel-x-api
+    environment:
+      DATABASE_URL: postgresql+asyncpg://sentinel:sentinel@db:5432/sentinel_x
+      ENVIRONMENT: production
+      DEBUG: "false"
+      JWT_SECRET: dev-secret-change-me
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
