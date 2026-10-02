@@ -89,6 +89,7 @@ async def test_run_monitor_check_up_without_recovery(
     result = make_result()
 
     db = FakeDB()
+
     monkeypatch.setattr(
         scheduler_service,
         "AsyncSessionLocal",
@@ -107,12 +108,10 @@ async def test_run_monitor_check_up_without_recovery(
         lambda **kwargs: _async_return(None),
     )
 
-    resolve_mock = lambda **kwargs: _async_return(None)
-
     monkeypatch.setattr(
         scheduler_service,
         "resolve_open_incident",
-        resolve_mock,
+        lambda **kwargs: _async_return(None),
     )
 
     await scheduler_service.run_monitor_check(monitor)
@@ -174,10 +173,70 @@ async def test_run_monitor_check_up_with_anomaly_and_recovery(
 
 
 @pytest.mark.asyncio
+async def test_run_monitor_check_down_below_threshold(
+    monkeypatch,
+):
+    monitor = make_monitor()
+
+    result = make_result(
+        status="DOWN",
+        status_code=None,
+        response_time_ms=None,
+        error="Connection failed",
+    )
+
+    db = FakeDB()
+
+    monkeypatch.setattr(
+        scheduler_service,
+        "AsyncSessionLocal",
+        FakeSessionFactory(db),
+    )
+
+    monkeypatch.setattr(
+        scheduler_service,
+        "check_url",
+        lambda **kwargs: _async_return(result),
+    )
+
+    monkeypatch.setattr(
+        scheduler_service,
+        "detect_response_time_anomaly",
+        lambda **kwargs: _async_return(None),
+    )
+
+    monkeypatch.setattr(
+        scheduler_service,
+        "has_consecutive_failures",
+        lambda **kwargs: _async_return(False),
+    )
+
+    create_called = False
+
+    async def fake_create_incident(**kwargs):
+        nonlocal create_called
+        create_called = True
+        return SimpleNamespace(id=uuid4())
+
+    monkeypatch.setattr(
+        scheduler_service,
+        "create_incident_from_failure",
+        fake_create_incident,
+    )
+
+    await scheduler_service.run_monitor_check(monitor)
+
+    assert len(db.added) == 1
+    assert db.added[0].status == "DOWN"
+    assert create_called is False
+
+
+@pytest.mark.asyncio
 async def test_run_monitor_check_down_new_incident(
     monkeypatch,
 ):
     monitor = make_monitor()
+
     result = make_result(
         status="DOWN",
         status_code=None,
@@ -211,6 +270,12 @@ async def test_run_monitor_check_down_new_incident(
 
     monkeypatch.setattr(
         scheduler_service,
+        "has_consecutive_failures",
+        lambda **kwargs: _async_return(True),
+    )
+
+    monkeypatch.setattr(
+        scheduler_service,
         "create_incident_from_failure",
         lambda **kwargs: _async_return(incident),
     )
@@ -227,6 +292,7 @@ async def test_run_monitor_check_down_existing_incident(
     monkeypatch,
 ):
     monitor = make_monitor()
+
     result = make_result(
         status="DOWN",
         status_code=500,
@@ -256,6 +322,12 @@ async def test_run_monitor_check_down_existing_incident(
 
     monkeypatch.setattr(
         scheduler_service,
+        "has_consecutive_failures",
+        lambda **kwargs: _async_return(True),
+    )
+
+    monkeypatch.setattr(
+        scheduler_service,
         "create_incident_from_failure",
         lambda **kwargs: _async_return(None),
     )
@@ -264,6 +336,82 @@ async def test_run_monitor_check_down_existing_incident(
 
     assert len(db.added) == 1
     assert db.added[0].status == "DOWN"
+
+
+@pytest.mark.asyncio
+async def test_run_monitor_check_down_three_consecutive_failures(
+    monkeypatch,
+):
+    monitor = make_monitor()
+
+    result = make_result(
+        status="DOWN",
+        status_code=503,
+        response_time_ms=None,
+        error="Service unavailable",
+    )
+
+    incident = SimpleNamespace(
+        id=uuid4(),
+    )
+
+    db = FakeDB()
+
+    monkeypatch.setattr(
+        scheduler_service,
+        "AsyncSessionLocal",
+        FakeSessionFactory(db),
+    )
+
+    monkeypatch.setattr(
+        scheduler_service,
+        "check_url",
+        lambda **kwargs: _async_return(result),
+    )
+
+    monkeypatch.setattr(
+        scheduler_service,
+        "detect_response_time_anomaly",
+        lambda **kwargs: _async_return(None),
+    )
+
+    failure_calls = 0
+    incident_calls = 0
+
+    async def fake_has_consecutive_failures(**kwargs):
+        nonlocal failure_calls
+        failure_calls += 1
+
+        return failure_calls >= 3
+
+    async def fake_create_incident(**kwargs):
+        nonlocal incident_calls
+        incident_calls += 1
+
+        return incident
+
+    monkeypatch.setattr(
+        scheduler_service,
+        "has_consecutive_failures",
+        fake_has_consecutive_failures,
+    )
+
+    monkeypatch.setattr(
+        scheduler_service,
+        "create_incident_from_failure",
+        fake_create_incident,
+    )
+
+    await scheduler_service.run_monitor_check(monitor)
+    assert incident_calls == 0
+
+    await scheduler_service.run_monitor_check(monitor)
+    assert incident_calls == 0
+
+    await scheduler_service.run_monitor_check(monitor)
+    assert incident_calls == 1
+
+    assert len(db.added) == 3
 
 
 @pytest.mark.asyncio

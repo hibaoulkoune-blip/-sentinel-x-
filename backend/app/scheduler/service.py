@@ -15,6 +15,28 @@ from app.monitors.checker import check_url
 from app.monitors.models import Monitor
 
 
+async def has_consecutive_failures(
+    db,
+    monitor_id: UUID,
+    required_failures: int = 3,
+) -> bool:
+    """Return True when the latest checks are all DOWN."""
+
+    result = await db.execute(
+        select(Check.status)
+        .where(Check.monitor_id == monitor_id)
+        .order_by(Check.checked_at.desc())
+        .limit(required_failures)
+    )
+
+    statuses = list(result.scalars().all())
+
+    return (
+        len(statuses) >= required_failures
+        and all(status == "DOWN" for status in statuses)
+    )
+
+
 async def run_monitor_check(monitor: Monitor) -> None:
     """Run one check, save the result, detect anomalies, and manage incidents."""
 
@@ -62,22 +84,34 @@ async def run_monitor_check(monitor: Monitor) -> None:
             )
 
         if result.status == "DOWN":
-            incident = await create_incident_from_failure(
+            failure_threshold_reached = await has_consecutive_failures(
                 db=db,
                 monitor_id=monitor.id,
-                monitor_name=monitor.name,
-                error=result.error,
+                required_failures=3,
             )
 
-            if incident is not None:
-                print(
-                    f"[INCIDENT] OPEN: "
-                    f"{monitor.name} "
-                    f"-> {incident.id}"
+            if failure_threshold_reached:
+                incident = await create_incident_from_failure(
+                    db=db,
+                    monitor_id=monitor.id,
+                    monitor_name=monitor.name,
+                    error=result.error,
                 )
+
+                if incident is not None:
+                    print(
+                        f"[INCIDENT] OPEN: "
+                        f"{monitor.name} "
+                        f"-> {incident.id}"
+                    )
+                else:
+                    print(
+                        f"[INCIDENT] Existing OPEN incident: "
+                        f"{monitor.name}"
+                    )
             else:
                 print(
-                    f"[INCIDENT] Existing OPEN incident: "
+                    f"[INCIDENT] Failure threshold not reached: "
                     f"{monitor.name}"
                 )
 
