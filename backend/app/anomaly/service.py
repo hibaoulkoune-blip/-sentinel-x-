@@ -45,7 +45,7 @@ async def detect_response_time_anomaly(
         if item.response_time_ms is not None
     ]
 
-    if len(values) < 5:
+    if len(values) < 10:
         return None
 
     average, standard_deviation, z_score = calculate_z_score(
